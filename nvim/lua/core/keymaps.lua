@@ -35,44 +35,53 @@ vim.keymap.set("n", "<C-b>", function()
 	local filetype = vim.bo.filetype
 	-- Get the absolute path of the current file, properly escaped for shell commands.
 	local filename = vim.fn.shellescape(vim.fn.expand("%:p"))
-	-- Get the absolute path of the current file without extension, properly escaped for shell commands.
-	local filename_no_ext = vim.fn.shellescape(vim.fn.expand("%:p:r"))
 
-	-- Initialize an empty command string.
-	local command = ""
-
-	-- Determine the command to execute based on the filetype.
+	-- Check if the filetype is Python.
 	if filetype == "python" then
-		-- Python 3 execution command.
-		command = "python3 " .. filename
-	elseif filetype == "c" then
-		-- C compilation and execution command.
-		command = "gcc " .. filename .. " -o " .. filename_no_ext .. " && ./" .. filename_no_ext
-	elseif filetype == "cpp" then
-		-- C++ compilation and execution command.
-		command = "g++ " .. filename .. " -o " .. filename_no_ext .. " && ./" .. filename_no_ext
-	elseif filetype == "html" then
-		-- Open HTML file in Google Chrome. No split window for HTML.
-		vim.cmd("!google-chrome " .. filename)
-		-- Exit the function as HTML output is not captured.
-		return
-	elseif filetype == "sql" then
-		-- SQL execution command (replace <your_database_name>).
-		command = "sqlite3 <your_database_name> < " .. filename
-	elseif filetype == "javascript" then
-		-- JavaScript execution command using Node.js.
-		command = "node " .. filename
-	elseif filetype == "sh" then
-		-- Bash script execution command.
-		command = "bash " .. filename
-	end
+		-- Open a new terminal split and run the Python script.
+		-- Use tmux if available, otherwise fallback to other terminal options.
+		-- Adjust the terminal command to suit your environment.
+		-- vim.cmd("!tmux split-window -h 'python3 " .. filename .. "'") -- For tmux
+		-- or:
+		vim.cmd("!gnome-terminal -- python3 " .. filename) -- For gnome-terminal
+		-- or:
+		-- vim.cmd("!xterm -e python3 " .. filename) -- For xterm
+		-- or:
+		-- vim.cmd("!konsole -e python3 " .. filename) -- For konsole
 
-	-- If a command was determined (not empty, indicating not HTML).
-	if command ~= "" then
-		-- Open a new split window and read the command output into it.
-		vim.cmd("silent new | r !" .. command)
-		-- Move the cursor to the new split window.
-		vim.cmd("wincmd j")
+		-- Check if the filetype is C or C++.
+	elseif filetype == "c" or filetype == "cpp" then
+		-- Get the filename without extension for compilation.
+		local filename_no_ext = vim.fn.shellescape(vim.fn.expand("%:p:r"))
+		-- Construct the compilation and execution command.
+		local compile_and_run = "gcc " .. filename .. " -o " .. filename_no_ext .. " && ./" .. filename_no_ext
+		-- If it's a C++ file, use g++.
+		if filetype == "cpp" then
+			compile_and_run = "g++ " .. filename .. " -o " .. filename_no_ext .. " && ./" .. filename_no_ext
+		end
+		-- Open a new terminal split and run the compilation and execution.
+		vim.cmd("!tmux split-window -h '" .. compile_and_run .. "'")
+
+	-- Check if the filetype is HTML.
+	elseif filetype == "html" then
+		-- Open the HTML file in Google Chrome.
+		vim.cmd("!google-chrome " .. filename)
+
+	-- Check if the filetype is SQL.
+	elseif filetype == "sql" then
+		-- Open a new terminal split and run the SQL script.
+		-- Replace <your_database_name> with your actual database name.
+		vim.cmd("!tmux split-window -h 'sqlite3 <your_database_name> < " .. filename .. "'")
+
+	-- Check if the filetype is JavaScript.
+	elseif filetype == "javascript" then
+		-- Open a new terminal split and run the JavaScript script using Node.js.
+		vim.cmd("!tmux split-window -h 'node " .. filename .. "'")
+
+	-- Check if the filetype is Bash shell script.
+	elseif filetype == "sh" then
+		-- Open a new terminal split and run the Bash script.
+		vim.cmd("!tmux split-window -h 'bash " .. filename .. "'")
 	end
 end, opts)
 

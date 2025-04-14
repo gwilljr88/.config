@@ -33,4 +33,5 @@ require("lazy").setup({
 	require("plugins.undotree"),
 	require("plugins.comments"),
 	require("plugins.vim-tmux-navigator"),
+	require("plugins.vimwiki"),
 })
