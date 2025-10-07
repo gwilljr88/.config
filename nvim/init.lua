@@ -34,4 +34,6 @@ require("lazy").setup({
 	require("plugins.comments"),
 	require("plugins.vim-tmux-navigator"),
 	require("plugins.vimwiki"),
+	require("plugins.mini-icons"),
+	require("plugins.render-markdown"),
 })

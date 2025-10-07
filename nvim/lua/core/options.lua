@@ -41,6 +41,8 @@ vim.opt.shortmess:append("c") -- Don't give |ins-completion-menu| messages (defa
 vim.opt.iskeyword:append("-") -- Hyphenated words recognized by searches (default: does not include '-')
 vim.opt.formatoptions:remove({ "c", "r", "o" }) -- Don't insert the current comment leader automatically for auto-wrapping comments using 'textwidth', hitting <Enter> in insert mode, or hitting 'o' or 'O' in normal mode. (default: 'croql')
 vim.opt.runtimepath:remove("/usr/share/vim/vimfiles") -- Separate Vim plugins from Neovim in case Vim still in use (default: includes this path if Vim is installed)
+vim.o.laststatus = 0 -- 0: Never show statusline, 1: Only if >1 window, 2: Always, 3: Global statusline
+vim.o.cmdheight = 0 -- set the command line height to 0
 
 -- Get the target path from environment variable
 -- This is to prevent exposing any local machine info
