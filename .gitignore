@@ -40,3 +40,4 @@ ubuntu-xdg-terminals.list
 xdg-terminals.list
 GNOME-xdg-terminals.list
 /htop/
+rclone/rclone.conf
