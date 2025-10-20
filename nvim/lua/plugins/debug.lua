@@ -76,6 +76,9 @@ return {
 		dap.listeners.before.event_exited["dapui_config"] = dapui.close
 
 		-- require('dap-go').setup()
-		require("dap-python").setup()
+		-- require("dap-python").setup()
+
+		-- Use the pipx-managed debugpy interpreter
+		require("dap-python").setup("~/.local/share/pipx/venvs/debugpy/bin/python")
 	end,
 }

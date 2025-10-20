@@ -67,3 +67,11 @@ else
 	-- Handle missing env var gracefully
 	print("Vimwiki: Warning: MY_GVFS_TARGET_PATH environment variable not set.")
 end
+-- Force treesitter to treat vimwiki buffers as markdown
+vim.api.nvim_create_autocmd("FileType", {
+	pattern = "vimwiki",
+	callback = function()
+		-- Set the Treesitter language to 'markdown' for highlighting and parsing.
+		vim.bo.filetype = "markdown." .. vim.bo.filetype
+	end,
+})
