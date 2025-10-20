@@ -36,3 +36,7 @@ vlc/
 mpv/youtube.com_cookies.txt
 mpv/youtube-cookies.txt
 /cosmic/*
+ubuntu-xdg-terminals.list
+xdg-terminals.list
+GNOME-xdg-terminals.list
+/htop/
