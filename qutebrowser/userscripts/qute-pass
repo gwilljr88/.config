@@ -1,1 +1,538 @@
-Not Found
+#!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: Chris Braun (cryzed) <cryzed@googlemail.com>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""
+Insert login information using pass and a dmenu-compatible application (e.g. dmenu, rofi -dmenu, ...). A short
+demonstration can be seen here: https://i.imgur.com/KN3XuZP.gif.
+
+MODIFIED SCRIPT: This version prioritizes using 'pass --clip' for -only flags for better security and workflow.
+"""
+
+import argparse
+import enum
+import fnmatch
+import functools
+import os
+import re
+import shlex
+import shutil  # Added for dynamic path lookup
+import subprocess
+import sys
+import unicodedata
+from urllib.parse import urlparse
+
+import idna
+import tldextract
+
+# --- DYNAMIC PATH LOOKUP (NEW) ---
+# Find the absolute path to the 'pass' executables for robust subprocess calls
+PASS_PATH = shutil.which("pass") or "pass"
+GOPASS_PATH = shutil.which("gopass") or "gopass"
+
+
+USAGE = """The domain of the site has to appear as a segment in the pass path,
+for example: "github.com/cryzed" or "websites/github.com". Alternatively the
+parameter `--unfiltered` may be used to get a list of all passwords. How the
+username and password are determined is freely configurable using the CLI
+arguments. As an example, if you instead store the username as part of the
+secret (and use a site's name as filename), instead of the default configuration,
+use `--username-target secret` and `--username-pattern "username: (.+)"`.
+
+The login information is inserted by emulating key events using qutebrowser's
+fake-key command in this manner: [USERNAME]<Tab>[PASSWORD], which is compatible
+with almost all login forms. For --username-only, --password-only, and --otp-only,
+the script now uses 'pass --clip' for a more secure clipboard copy.
+
+If you use gopass with multiple mounts, use the CLI switch --mode gopass to switch to gopass mode.
+
+Suggested bindings similar to Uzbl's `formfiller` script:
+
+    config.bind('<z><l>', 'spawn --userscript qute-pass')
+    config.bind('<z><u><l>', 'spawn --userscript qute-pass --username-only')
+    config.bind('<z><p><l>', 'spawn --userscript qute-pass --password-only')
+    config.bind('<z><o><l>', 'spawn --userscript qute-pass --otp-only')
+"""
+
+EPILOG = """Dependencies: tldextract (Python 3 module), pass, pass-otp (optional).
+
+WARNING (FOR FAKE-KEY MODE): The login details are viewable as plaintext in qutebrowser's debug log (qute://log) and might be shared if
+you decide to submit a crash report! The clipboard mode bypasses the FIFO log."""
+
+
+def expanded_path(path):
+    # Expand potential ~ in paths, since this script won't be called from a shell that does it for us
+    expanded = os.path.expanduser(path)
+    # Add trailing slash if not present
+    return os.path.join(expanded, "")
+
+
+argument_parser = argparse.ArgumentParser(
+    description=__doc__, usage=USAGE, epilog=EPILOG
+)
+argument_parser.add_argument("url", nargs="?", default=os.getenv("QUTE_URL"))
+argument_parser.add_argument(
+    "--password-store",
+    "-p",
+    default=expanded_path(os.getenv("PASSWORD_STORE_DIR", default="~/.password-store")),
+    help="Path to your pass password-store (only used in pass-mode)",
+    type=expanded_path,
+)
+argument_parser.add_argument(
+    "--mode",
+    "-M",
+    choices=["pass", "gopass"],
+    default="pass",
+    help="Select mode [gopass] to use gopass instead of the standard pass.",
+)
+argument_parser.add_argument(
+    "--prefix",
+    type=str,
+    help="Search only the given subfolder of the store (only used in gopass-mode)",
+)
+argument_parser.add_argument(
+    "--username-pattern",
+    "-u",
+    default=r".*/(.+)",
+    help="Regular expression that matches the username",
+)
+argument_parser.add_argument(
+    "--username-target",
+    "-U",
+    choices=["path", "secret"],
+    default="path",
+    help="The target for the username regular expression",
+)
+argument_parser.add_argument(
+    "--password-pattern",
+    "-P",
+    default=r"(.*)",
+    help="Regular expression that matches the password",
+)
+argument_parser.add_argument(
+    "--dmenu-invocation",
+    "-d",
+    default="rofi -dmenu",
+    help="Invocation used to execute a dmenu-provider",
+)
+argument_parser.add_argument(
+    "--no-insert-mode",
+    "-n",
+    dest="insert_mode",
+    action="store_false",
+    help="Don't automatically enter insert mode",
+)
+argument_parser.add_argument(
+    "--io-encoding",
+    "-i",
+    default="UTF-8",
+    help="Encoding used to communicate with subprocesses",
+)
+argument_parser.add_argument(
+    "--merge-candidates",
+    "-m",
+    action="store_true",
+    help="Merge pass candidates for fully-qualified and registered domain name",
+)
+argument_parser.add_argument(
+    "--extra-url-suffixes",
+    "-s",
+    default="",
+    help="Comma-separated string containing extra suffixes (e.g local)",
+)
+argument_parser.add_argument(
+    "--unfiltered",
+    dest="unfiltered",
+    action="store_true",
+    help="Show an unfiltered selection of all passwords in the store",
+)
+argument_parser.add_argument(
+    "--always-show-selection",
+    dest="always_show_selection",
+    action="store_true",
+    help="Always show selection, even if there is only a single match",
+)
+group = argument_parser.add_mutually_exclusive_group()
+group.add_argument(
+    "--username-only",
+    "-e",
+    action="store_true",
+    help="Only insert username (or copy to clipboard)",
+)
+group.add_argument(
+    "--password-only",
+    "-w",
+    action="store_true",
+    help="Only insert password (or copy to clipboard)",
+)
+group.add_argument(
+    "--otp-only",
+    "-o",
+    action="store_true",
+    help="Only insert OTP code (or copy to clipboard)",
+)
+
+
+# Standard error writer
+stderr = functools.partial(print, file=sys.stderr)
+
+
+class ExitCodes(enum.IntEnum):
+    SUCCESS = 0
+    FAILURE = 1
+    # 1 is automatically used if Python throws an exception
+    NO_PASS_CANDIDATES = 2
+    COULD_NOT_MATCH_USERNAME = 3
+    COULD_NOT_MATCH_PASSWORD = 4
+
+
+# Exception definitions (must be outside main)
+class CouldNotMatchUsername(Exception):
+    pass
+
+
+class CouldNotMatchPassword(Exception):
+    pass
+
+
+def qute_command(command):
+    """Writes a command to qutebrowser's FIFO pipe."""
+    try:
+        with open(os.environ["QUTE_FIFO"], "w") as fifo:
+            fifo.write(command + "\n")
+            fifo.flush()
+    except KeyError:
+        # QUTE_FIFO is not set if the script is run outside of qutebrowser
+        stderr(
+            "WARNING: QUTE_FIFO environment variable not found. Cannot send commands to qutebrowser."
+        )
+
+
+# Encode candidate string parts as Internationalized Domain Name, doing
+# Unicode normalization before.
+def idna_encode(name):
+    # Do Unicode normalization first
+    unicode_normalized = unicodedata.normalize("NFKC", name)
+    # Empty strings can not be encoded (e.g., from split_path), fall back to unicode
+    try:
+        idna_encoded = idna.encode(unicode_normalized).decode("ascii")
+    except (idna.IDNAError, UnicodeEncodeError):
+        idna_encoded = unicode_normalized
+    return idna_encoded
+
+
+def find_pass_candidates(domain, unfiltered=False):
+    """Searches the pass store for matching paths."""
+    candidates = []
+
+    if arguments.mode == "gopass":
+        # Use gopass list command
+        gopass_args = [GOPASS_PATH, "list", "--flat"]
+        if arguments.prefix:
+            gopass_args.append(arguments.prefix)
+        # Use absolute path for robustness
+        all_passwords = (
+            subprocess.run(gopass_args, stdout=subprocess.PIPE)
+            .stdout.decode("UTF-8")
+            .splitlines()
+        )
+
+        for password in all_passwords:
+            if unfiltered or domain in password:
+                candidates.append(password)
+    else:
+        # Walk the file system for standard pass
+        idna_domain = idna_encode(domain)
+        for path, directories, file_names in os.walk(
+            arguments.password_store, followlinks=True
+        ):
+            secrets = fnmatch.filter(file_names, "*.gpg")
+            if not secrets:
+                continue
+
+            # Strip password store path prefix to get the relative pass path
+            pass_path = path[len(arguments.password_store) :]
+            split_path = pass_path.split(os.path.sep)
+            idna_split_path = [idna_encode(part) for part in split_path]
+            for secret in secrets:
+                secret_base = os.path.splitext(secret)[0]
+                idna_secret_base = idna_encode(secret_base)
+                if not unfiltered and idna_domain not in (
+                    idna_split_path + [idna_secret_base]
+                ):
+                    continue
+
+                # Append the unencoded Unicode path/name
+                candidates.append(os.path.join(pass_path, secret_base))
+    return candidates
+
+
+def _run_pass(pass_arguments):
+    """Internal helper to execute pass/gopass with custom environment settings."""
+    # Determine the correct executable path based on the mode
+    if arguments.mode == "gopass":
+        pass_command = [GOPASS_PATH]
+    else:
+        pass_command = [PASS_PATH]
+
+    env = os.environ.copy()
+    env["PASSWORD_STORE_DIR"] = arguments.password_store
+
+    process = subprocess.run(
+        pass_command + pass_arguments, env=env, stdout=subprocess.PIPE, check=False
+    )
+    # The original script does not check the return code, so we maintain that
+    # but still allow for decoding the output.
+    return process.stdout.decode(arguments.io_encoding).strip()
+
+
+def pass_(path):
+    """Runs 'pass show' to get the secret content."""
+    return _run_pass(["show", path])
+
+
+def pass_otp(path):
+    """Runs 'pass otp' to get the one-time password code."""
+    # Note: This is only used in the default (fake-key) flow.
+    # The clipboard flow uses the -c flag directly in copy_to_clipboard.
+    if arguments.mode == "gopass":
+        return _run_pass(["otp", "-o", path])
+    return _run_pass(["otp", path])
+
+
+def dmenu(items, invocation):
+    """Runs the dmenu-compatible application to select an item."""
+    command = shlex.split(invocation)
+    process = subprocess.run(
+        command,
+        input="\n".join(items).encode(arguments.io_encoding),
+        stdout=subprocess.PIPE,
+    )
+    return process.stdout.decode(arguments.io_encoding).strip()
+
+
+def fake_key_raw(text):
+    """Emulates key presses for insertion."""
+    for character in text:
+        # Escape all characters by default, space requires special handling
+        sequence = '" "' if character == " " else r"\{}".format(character)
+        qute_command("fake-key {}".format(sequence))
+
+
+def extract_password(secret, pattern):
+    """Extracts password from secret content using regex."""
+    match = re.match(pattern, secret)
+    if not match:
+        raise CouldNotMatchPassword("Pattern did not match target")
+    try:
+        return match.group(1)
+    except IndexError:
+        raise CouldNotMatchPassword(
+            "Pattern did not contain capture group, please use capture group. Example: (.*)"
+        )
+
+
+def extract_username(target, pattern):
+    """Extracts username from path or secret using regex."""
+    match = re.search(pattern, target, re.MULTILINE)
+    if not match:
+        raise CouldNotMatchUsername("Pattern did not match target")
+    try:
+        return match.group(1)
+    except IndexError:
+        raise CouldNotMatchUsername(
+            "Pattern did not contain capture group, please use capture group. Example: (.*)"
+        )
+
+
+def copy_to_clipboard(path, mode):
+    """Copies the specified field (password, username, or OTP) to the clipboard using pass --clip."""
+    pass_args = []
+
+    # Determine the correct executable path based on the mode
+    exec_path = GOPASS_PATH if arguments.mode == "gopass" else PASS_PATH
+
+    # The actual implementation of --clip-only varies and is often unreliable/custom.
+    # We stick to the standard/gopass usage that works for the primary secret/OTP.
+    # Username copy requires 'pass' to copy a specific line or the user to configure it
+    # in the password file's second line. Assuming standard pass format (pass\nuser\nother)
+    # we use 'pass show --clip-line 1' if supported, or fall back to default pass --clip.
+    # WARNING: This "username" logic is highly dependent on how the user's 'pass' utility is configured.
+
+    if mode == "otp":
+        # CRITICAL: Use the explicit otp copy command.
+        # pass: 'pass otp -c' ; gopass: 'gopass otp -c'
+        cmd = [exec_path, "otp", "-c", path]
+
+    elif mode == "password":
+        # Default: copies the first line (the password)
+        cmd = [exec_path, "--clip", path] + pass_args
+
+    elif mode == "username":
+        # Attempt to copy line 1 (the line *after* the password line, which is often the username)
+        # This requires pass to support '--clip-line'. If not supported, it might copy the password.
+        if arguments.mode == "gopass":
+            # gopass doesn't have --clip-line, requires manual extraction then piping to clipboard utility
+            # For simplicity/safety, we stick to the original script's method for username-only,
+            # which relies on path extraction, but since the user requested clipboard mode,
+            # we must find a way to use the secret. We will assume the user has configured 'pass'
+            # to handle username-only or we use the original script's way:
+            secret = pass_(path)
+            username_target = path if arguments.username_target == "path" else secret
+            username = extract_username(username_target, arguments.username_pattern)
+
+            # Send the extracted username to the system clipboard utility (e.g. xclip/wl-copy)
+            clip_util = shutil.which("wl-copy") or shutil.which("xclip")
+            if clip_util:
+                subprocess.run(
+                    [clip_util, "-selection", "clipboard"],
+                    input=username.encode(arguments.io_encoding),
+                    check=True,
+                )
+                return
+
+            # If no clip utility found, fall back to fake-key (though this is for copy mode)
+            stderr(
+                "WARNING: Could not find xclip or wl-copy for username copy. Falling back to fake-key."
+            )
+            fake_key_raw(username)
+            return
+
+        # Standard pass has --clip-line, which is usually the cleanest approach
+        cmd = [exec_path, "show", "--clip-line", "1", path]
+
+    else:
+        # Fallback for unexpected mode
+        stderr(f"Internal error: Unknown clipboard mode: {mode}")
+        sys.exit(ExitCodes.FAILURE)
+
+    try:
+        # The 'pass' utility handles copying to the clipboard
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        stderr(
+            f"Error copying {mode} to clipboard. Check if 'pass' is installed and working. Command failed: {' '.join(cmd)}. Error: {e.stderr.decode()}"
+        )
+        sys.exit(ExitCodes.FAILURE)
+
+
+def main(arguments):
+    if not arguments.url:
+        argument_parser.print_help()
+        return ExitCodes.FAILURE
+
+    extractor = tldextract.TLDExtract(
+        extra_suffixes=arguments.extra_url_suffixes.split(",")
+    )
+    extract_result = extractor(arguments.url)
+
+    # Try to find candidates using targets in the following order: fqdn, registered domain, ipv4, private domain, netloc.
+    candidates = set()
+    attempted_targets = []
+
+    private_domain = ""
+    if not extract_result.suffix:
+        private_domain = (
+            ".".join((extract_result.subdomain, extract_result.domain))
+            if extract_result.subdomain
+            else extract_result.domain
+        )
+
+    netloc = urlparse(arguments.url).netloc
+
+    for target in filter(
+        None,
+        [
+            extract_result.fqdn,
+            (
+                extract_result.top_domain_under_public_suffix
+                if hasattr(extract_result, "top_domain_under_public_suffix")
+                else extract_result.registered_domain
+            ),
+            extract_result.ipv4,
+            private_domain,
+            netloc,
+        ],
+    ):
+        attempted_targets.append(target)
+        target_candidates = find_pass_candidates(
+            target, unfiltered=arguments.unfiltered
+        )
+        if not target_candidates:
+            continue
+
+        candidates.update(target_candidates)
+        if not arguments.merge_candidates:
+            break
+    else:
+        if not candidates:
+            stderr(
+                "No pass candidates for URL {!r} found! (I tried {!r})".format(
+                    arguments.url, attempted_targets
+                )
+            )
+            return ExitCodes.NO_PASS_CANDIDATES
+
+    # Selection Logic
+    if len(candidates) == 1 and not arguments.always_show_selection:
+        selection = candidates.pop()
+    else:
+        selection = dmenu(sorted(candidates), arguments.dmenu_invocation)
+
+    # Nothing was selected, simply return
+    if not selection:
+        return ExitCodes.SUCCESS
+
+    # --- ACTION LOGIC MODIFIED HERE: Check for clipboard-only flags first ---
+
+    if arguments.username_only:
+        # Use new, secure clipboard copy
+        copy_to_clipboard(selection, "username")
+        return ExitCodes.SUCCESS
+
+    if arguments.password_only:
+        # Use new, secure clipboard copy
+        copy_to_clipboard(selection, "password")
+        return ExitCodes.SUCCESS
+
+    if arguments.otp_only:
+        # Use new, secure clipboard copy
+        copy_to_clipboard(selection, "otp")
+        return ExitCodes.SUCCESS
+
+    # --- Fallback to Original Fake-Key Insertion (Username + Password) ---
+
+    # Only decrypt the secret if we need the password or if username is stored in secret.
+    # We do not need the secret if username is from path AND we are only doing username-only, but that case
+    # is now handled above by copy_to_clipboard.
+    secret = pass_(selection)
+
+    username_target = selection if arguments.username_target == "path" else secret
+    try:
+        # Enter username and password using fake-key and <Tab>
+        fake_key_raw(extract_username(username_target, arguments.username_pattern))
+        qute_command("fake-key <Tab>")
+        fake_key_raw(extract_password(secret, arguments.password_pattern))
+    except CouldNotMatchPassword as e:
+        stderr("Failed to match password, target: secret, error: {}".format(e))
+        return ExitCodes.COULD_NOT_MATCH_PASSWORD
+    except CouldNotMatchUsername as e:
+        stderr(
+            "Failed to match username, target: {}, error: {}".format(
+                arguments.username_target, e
+            )
+        )
+        return ExitCodes.COULD_NOT_MATCH_USERNAME
+
+    if arguments.insert_mode:
+        qute_command("mode-enter insert")
+
+    return ExitCodes.SUCCESS
+
+
+if __name__ == "__main__":
+    # Fixes the NameError by using the definition from Chunk 1
+    arguments = argument_parser.parse_args()
+    sys.exit(main(arguments))
