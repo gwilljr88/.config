@@ -49,7 +49,7 @@ vim.o.cmdheight = 0 -- set the command line height to 0
 local my_target_path = vim.env.MY_GVFS
 if my_target_path then
 	-- Use the path
-	print("Vimwiki: Using target path from environment variable.")
+	-- print("Vimwiki: Using target path from environment variable.")
 	-- Pass it to vimwiki
 	-- Setup for vimwiki, configure here before the plugin is called
 	vim.g.vimwiki_list = {
@@ -75,3 +75,15 @@ vim.api.nvim_create_autocmd("FileType", {
 		vim.bo.filetype = "markdown." .. vim.bo.filetype
 	end,
 })
+-- LAZYGIT GLOBAL OPTIONS (Plugin will read these when it runs setup())
+vim.g.lazygit_floating_window_winblend = 0
+vim.g.lazygit_floating_window_scaling_factor = 0.9
+vim.g.lazygit_floating_window_border_chars = {'╭','─', '╮', '│', '╯','─', '╰', '│'}
+vim.g.lazygit_floating_window_use_plenary = 1 -- Set to 1 if you have plenary installed
+vim.g.lazygit_use_neovim_remote = 1
+
+vim.g.lazygit_use_custom_config_file_path = 0
+vim.g.lazygit_config_file_path = '' 
+-- The config path variables are unnecessary since you're using the table form in the keymaps block.
+
+vim.g.lazygit_on_exit_callback = nil
