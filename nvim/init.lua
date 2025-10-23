@@ -36,4 +36,5 @@ require("lazy").setup({
 	require("plugins.vimwiki"),
 	require("plugins.mini-icons"),
 	require("plugins.render-markdown"),
+	require("plugins.lazygit"),
 })
