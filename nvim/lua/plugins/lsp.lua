@@ -228,18 +228,28 @@ return {
 		local ensure_installed = vim.tbl_keys(servers or {})
 		vim.list_extend(ensure_installed, {
 			"stylua", -- Used to format Lua code
+			"prettier",
+			"eslint_d"
 		})
 		require("mason-tool-installer").setup({ ensure_installed = ensure_installed })
 
 		require("mason-lspconfig").setup({
 			handlers = {
 				function(server_name)
-					local server = servers[server_name] or {}
-					-- This handles overriding only values explicitly passed
-					-- by the server configuration above. Useful when disabling
-					-- certain features of an LSP (for example, turning off formatting for tsserver)
-					server.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server.capabilities or {})
-					require("lspconfig")[server_name].setup(server)
+					local server_config = servers[server_name] or {}
+
+					-- 1. Combine Capabilities
+					-- Apply the capabilities (from nvim-cmp) and server-specific overrides.
+					server_config.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server_config.capabilities or {})
+
+					-- 2. Register the server configuration
+					-- This registers the settings (capabilities, filetypes, settings table) for the server.
+					-- nvim-lspconfig will merge its defaults with the settings you provide here.
+					vim.lsp.config(server_name, server_config)
+
+					-- 3. Enable the server
+					-- This tells Neovim to look for the server and start it when the relevant filetype is opened.
+					vim.lsp.enable(server_name)
 				end,
 			},
 		})
